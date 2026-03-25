@@ -195,9 +195,11 @@ class VescUart
 		 *
 		 * @param      payload  - The payload as a unit8_t Array with length of int lenPayload
 		 * @param      lenPay   - Length of payload
-		 * @return     The number of bytes send
+		 * @return     The number of bytes send, or 0 on error.
+         *
+         * @note       Empty payload is acceptable here, even if unusable.
 		 */
-		int packSendPayload(uint8_t * payload, int lenPay);
+		int packSendPayload(const uint8_t* payload, int lenPay);
 
 		/**
 		 * @brief      Receives the message over Serial

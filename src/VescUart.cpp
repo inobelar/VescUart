@@ -138,45 +138,112 @@ bool VescUart::unpackPayload(uint8_t * message, int lenMes, uint8_t * payload) {
 	}
 }
 
-
-int VescUart::packSendPayload(uint8_t * payload, int lenPay) {
-
-	uint16_t crcPayload = crc16(payload, lenPay);
+int VescUart::packSendPayload(const uint8_t* payload, int lenPay) 
+{
 	int count = 0;
-	uint8_t messageSend[256];
-	
-	if (lenPay <= 256)
+
+	/*
+	 * NOTE: VESC protocol max payload.size is 512, so max packet.size is:
+	 * - 512 + 5 = 517 (for small payload.size (<= 255),         stored in 1 byte) 
+	 * - 512 + 6 = 518 (for big   payload.size (> 255 <= 65535), stored in 2 bytes)
+	 *
+	 * But to not waste space too much, we use mush smaller packet.size: 256
+	 * since we typically send into VESC very short packets (even receive much larger).
+	 */
+	uint8_t packet_buffer[256];
+
+	if(lenPay < 0) // Impossible case, but handled for safety
 	{
-		messageSend[count++] = 2;
-		messageSend[count++] = lenPay;
+		return 0; // Cannot form a packet - payload.size invalid
 	}
-	else
+
+	// If we want to write non-empty payload, but dont provide its data, we
+    // cannot operate with it
+	if( (lenPay > 0) && (payload == NULL) )
 	{
-		messageSend[count++] = 3;
-		messageSend[count++] = (uint8_t)(lenPay >> 8);
-		messageSend[count++] = (uint8_t)(lenPay & 0xFF);
+		return 0; // Cannot form a packet
 	}
 
-	memcpy(messageSend + count, payload, lenPay);
-	count += lenPay;
+	if (lenPay <= 255) // Small packet
+	{
+		/*
+         * Payload.size is small-enough to place it in single byte.
+         *
+         * packet_buffer.size must be at least: `lenPay + 5` to store:
+         *
+         *   [u8: start_byte][u8: lenPay][u8[]: payload][u16: crc16][u8: sync_byte]
+         */
+		if(sizeof(packet_buffer) < (lenPay + 5))
+		{
+			return 0; // Cannot form a packet - packet_buffer too small
+		}
+		else
+		{
+			// Write header
+			packet_buffer[count++] = 0x02;   // start_byte
+			packet_buffer[count++] = lenPay; // payload_size
+		}
+	}
+	else // lenPay > 255 - Payload.size cannot be stored in singe byte
+	{
+		// Payload.size too large to store it in 2 bytes
+        if(lenPay > 65535) // 65535 is uint16_t::max
+        {
+            return 0; // Cannot form a packet - payload.size too big
+        }
 
-	messageSend[count++] = (uint8_t)(crcPayload >> 8);
-	messageSend[count++] = (uint8_t)(crcPayload & 0xFF);
-	messageSend[count++] = 3;
-	// messageSend[count] = NULL;
+        /*
+         * packet_buffer.size must be at least: `lenPay + 6` to store:
+         *
+         *   [u8: start_byte][u16: lenPay][u8[]: payload][u16: crc16][u8: sync_byte]
+         */
+
+        if(sizeof(packet_buffer) < (lenPay + 6))
+        {
+            return 0; // Cannot form a packet - packet_buffer too small
+        }
+        else // sizeof(packet_buffer) >= (lenPay + 6)
+        {
+            // Write header
+            packet_buffer[count++] = 0x03;                     // start_byte
+			packet_buffer[count++] = (uint8_t)(lenPay >> 8);   // payload_size[0]
+			packet_buffer[count++] = (uint8_t)(lenPay & 0xFF); // payload_size[1]
+        }	
+	}
+
+	// Copy payload (if non-empty)
+	if(lenPay > 0)
+	{
+		memcpy(packet_buffer + count, payload, lenPay);
+		count += lenPay;
+	}
+
+	// Calculate crc for payload and pack it
+	{
+		// NOTE: if payload is empty (lenPay is 0), crc16() return `0` here.
+		const uint16_t crcPayload = crc16(payload, lenPay);
+
+		packet_buffer[count++] = (uint8_t)(crcPayload >> 8);   // crc16[0]
+		packet_buffer[count++] = (uint8_t)(crcPayload & 0xFF); // crc16[1]
+	}
+
+	packet_buffer[count++] = 0x03; // stop_byte
 	
-	if(debugPort!=NULL){
-		debugPort->print("Package to send: "); serialPrint(messageSend, count);
+	if(debugPort != NULL)
+	{
+		debugPort->print("Package to send: "); 
+		serialPrint(packet_buffer, count);
 	}
 
-	// Sending package
-	if( serialPort != NULL )
-		serialPort->write(messageSend, count);
+	// Sending packet
+	if(serialPort != NULL)
+	{
+		serialPort->write(packet_buffer, count);
+	}
 
 	// Returns number of send bytes
 	return count;
 }
-
 
 bool VescUart::processReadPacket(uint8_t * message) {
 
